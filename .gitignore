@@ -1,0 +1,19 @@
+# Microsoft Office 临时锁定文件
+~$*
+
+# Vivado/SDK 生成目录（如以后在本目录创建）
+.Xil/
+Debug/
+Release/
+sdk_workspace/
+workspace/
+
+# 编译输出
+*.o
+*.elf
+*.bit
+*.bin
+*.map
+*.log
+*.jou
+
