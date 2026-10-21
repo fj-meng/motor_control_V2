@@ -17,3 +17,6 @@ workspace/
 *.log
 *.jou
 
+SLCANInterface.cpp
+datadealer.cpp
+common.h

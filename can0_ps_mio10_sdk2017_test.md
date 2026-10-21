@@ -10,8 +10,11 @@ the Zynq PS CAN0 peripheral, not a PL CAN IP.
 - `can0_driver.h` contains the public CAN function declarations.
 - `can0_driver.c` contains all CAN function definitions and the receive loop.
 - `main.c` contains only the application entry point and startup flow.
+- `motor_can_commands.h` contains the standard-frame special commands,
+  extended-frame Cmd/Index dictionary, parameter indexes, and multi-turn
+  control field definitions.
 
-Add these four files to the SDK application's `src` directory. Do not add the
+Add these five files to the SDK application's `src` directory. Do not add the
 old `can0_ps_mio10_sdk2017_test.c` or `can0_ps_mio10_sdk2017_test.h` files if
 they are still present in an older SDK workspace. Also do not add
 `can0_ps_mio10_sdk2017_test2.c`, because it contains another `main()`.
@@ -36,15 +39,15 @@ they are still present in an older SDK workspace. Also do not add
 
 1. Create a Standalone BSP and application project.
 2. Set `ps7_uart_1` as `stdin` and `stdout`, at 115200 baud.
-3. Add `can0_config.h`, `can0_driver.h`, `can0_driver.c`, and `main.c` to the
-   application. Only `main.c` provides `main()`.
+3. Add `can0_config.h`, `can0_driver.h`, `can0_driver.c`,
+   `motor_can_commands.h`, and `main.c` to the application. Only `main.c`
+   provides `main()`.
 4. Build and run with the motor powered and the CAN bus correctly terminated.
 
 The initial build is receive-only. It prints the raw PS CAN identifier, DLC,
-the PS CAN hardware receive timestamp, and up to eight data bytes. The
-timestamp is the low 16 bits returned in `RxFrame[1]`; it is not the time of
-the SDK interrupt. It wraps, so a later version should extend it to 32 or 64
-bits in software.
+and up to eight data bytes. It does not include a timestamp in the CAN frame
+or obtain the PPS timestamp; the PPS capture and association must be added as
+separate timing metadata when that hardware path is available.
 
 The timing calculation is
 `100 MHz / ((4 + 1) * (1 + (15 + 1) + (2 + 1))) = 1 Mbit/s`.

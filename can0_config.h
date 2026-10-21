@@ -9,6 +9,7 @@
 #define CAN0_CONFIG_H
 
 #include "xparameters.h"
+#include "motor_can_commands.h"
 
 /* Vivado 导出的 PS CAN0 设备编号。 */
 #define CAN_DEVICE_ID       XPAR_XCANPS_0_DEVICE_ID
@@ -39,9 +40,18 @@
 #define CAN_BTR_TSEG2       2U
 #define CAN_BTR_TSEG1       15U
 
-/* 电机和主机使用的 CAN 标准帧 ID。 */
-#define MOTOR_CAN_ID        1U
-#define HOST_CAN_ID         100U
+/*
+ * CAN 仲裁 ID 与反馈数据中的模块 ID 分开配置。
+ * 当前抓包观察到：控制帧 ID=8、反馈帧 ID=50、模块 ID=1。
+ * 如果电机参数中配置过其他 ID，只修改这里，不要修改指令码字典。
+ */
+#define CAN_COMMAND_ID      MOTOR_CAN_DEFAULT_COMMAND_ID
+#define CAN_FEEDBACK_ID     MOTOR_CAN_DEFAULT_FEEDBACK_ID
+#define MOTOR_MODULE_ID     MOTOR_CAN_DEFAULT_MODULE_ID
+
+/* 旧代码兼容别名：MOTOR_CAN_ID 不再表示电机模块 ID。 */
+#define MOTOR_CAN_ID        CAN_COMMAND_ID
+#define HOST_CAN_ID         CAN_FEEDBACK_ID
 
 /*
  * 发送测试开关：

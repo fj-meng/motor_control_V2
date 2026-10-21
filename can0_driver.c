@@ -112,11 +112,12 @@ static void PrintReceivedFrame(const u32 *frame)
 {
 	u8 *data = (u8 *)&frame[2];
 	u32 dlc = (frame[1] & XCANPS_DLCR_DLC_MASK) >> XCANPS_DLCR_DLC_SHIFT;
-	u32 timestamp = frame[1] & XCANPS_DLCR_TIMESTAMP_MASK;
 	u32 i;
 
-	xil_printf("RX raw_id=0x%08x dlc=%d hw_ts=0x%04x data=",
-			frame[0], dlc, timestamp);
+	/* CAN 接收缓冲区只解析电机通信数据。
+	 * 时间戳由外部 PPS/计时逻辑获取，不属于 CAN 报文内容。
+	 */
+	xil_printf("RX raw_id=0x%08x dlc=%d data=", frame[0], dlc);
 
 	/* 经典 CAN 最多 8 字节，防止异常 DLC 导致越界读取。 */
 	for (i = 0U; i < dlc && i < 8U; ++i) {
