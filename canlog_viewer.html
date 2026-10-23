@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CANLOG.BIN 查看器</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --line: #e3e6ea;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --bad: #cf222e;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+
+  .sub {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+
+  .drop {
+    background: var(--card);
+    border: 2px dashed var(--line);
+    border-radius: 10px;
+    padding: 56px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+
+  .drop:hover, .drop.over {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .drop-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .drop-hint { color: var(--muted); font-size: 13px; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+
+  .card .k {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+
+  .card .v {
+    font-size: 19px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .card .u { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .card.ok .v { color: var(--ok); }
+  .card.warn .v { color: var(--warn); }
+  .card.bad .v { color: var(--bad); }
+
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .panel-title { font-size: 14px; font-weight: 600; }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  button {
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  button:hover { border-color: #c8ced6; background: #fafbfc; }
+
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  button.primary:hover { background: #1d4ed8; }
+
+  canvas { width: 100%; display: block; }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+
+  .legend i {
+    display: inline-block;
+    width: 10px;
+    height: 2px;
+    vertical-align: middle;
+    margin-right: 5px;
+  }
+
+  .table-wrap {
+    max-height: 320px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  th, td {
+    padding: 6px 10px;
+    text-align: right;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+
+  th {
+    position: sticky;
+    top: 0;
+    background: #fafbfc;
+    font-weight: 600;
+    color: var(--muted);
+    z-index: 1;
+  }
+
+  td:first-child, th:first-child { text-align: left; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #fafbfc; }
+
+  .err {
+    background: #fff5f5;
+    border: 1px solid #ffc9c9;
+    color: var(--bad);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+
+  .note {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-top: 10px;
+    line-height: 1.7;
+  }
+
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 12px;
+    background: #f0f2f5;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>CANLOG.BIN 查看器</h1>
+  <div class="sub">
+    把 SD 卡里的 <code>CANLOG.BIN</code> 拖到下面即可解析，全程在本地完成，不上传任何数据。
+  </div>
+
+  <div id="drop" class="drop">
+    <div class="drop-title">拖入 CANLOG.BIN，或点击选择文件</div>
+    <div class="drop-hint">文件格式：512 字节头 + 若干 32 字节记录</div>
+    <input type="file" id="file" accept=".bin,.BIN" hidden>
+  </div>
+
+  <div id="error" class="err" hidden></div>
+
+  <div id="result" hidden>
+    <div id="cards" class="cards"></div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">位置曲线</div>
+        <div class="row">
+          <button id="btn-angle">累计角度</button>
+          <button id="btn-speed">转速</button>
+          <button id="btn-current">电流</button>
+        </div>
+      </div>
+      <canvas id="chart" height="300"></canvas>
+      <div class="legend">
+        <span><i id="lg-color" style="background:#2563eb"></i><span id="lg-text">累计角度</span></span>
+        <span id="lg-range"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">帧列表（前 200 条）</div>
+        <div class="row">
+          <button id="btn-csv">导出完整 CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>时间 (ms)</th>
+              <th>ID</th>
+              <th>类型</th>
+              <th>DLC</th>
+              <th>圈数</th>
+              <th>角度 (deg)</th>
+              <th>转速 (rpm)</th>
+              <th>电流 (A)</th>
+              <th>原始数据</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="note" id="note"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * 文件格式
+ *
+ *   偏移 0     512 字节头：
+ *                char Magic[8]     "CANLOG01"
+ *                u32  RecordSize   32
+ *                u32  Version
+ *                u32  Reserved
+ *                u32  StartTick
+ *   偏移 512   之后全是 32 字节记录，小端：
+ *                u32 Ts      微秒
+ *                u32 Id      仲裁 ID（线性值）
+ *                u8  Dlc
+ *                u8  Ide     1=扩展帧
+ *                u8  Rtr
+ *                u8  Flag
+ *                u8  Data[8]
+ *                u8  Pad[12]
+ * ------------------------------------------------------------------ */
+
+var HEADER_SIZE = 512;
+var RECORD_SIZE = 32;
+var MAGIC = "CANLOG01";
+
+/* 电机协议常数（手册 7.4 / 7.6） */
+var VEL_ZERO = 2048;          /* 12 位速度码零点 */
+var CUR_ZERO = 2048;          /* 12 位电流码零点 */
+var VEL_FULL_RADS = 58.639;   /* 半量程对应 rad/s（HO10010） */
+var CUR_FULL_AMP = 32.0;      /* 半量程对应 A */
+var INC_COUNTS_PER_TURN = 1048576;  /* 增量模式：1048576 码 = 1 圈 */
+var HOST_ID = 100;            /* 电机回给主机的帧 ID */
+
+var GAP_MIN_US = 1500;        /* 帧间隔落在这个区间算丢了一帧 */
+var GAP_MAX_US = 10000;       /* 超过这个当总线静默，不算丢帧 */
+
+var state = {
+  frames: [],
+  chartMode: "angle",
+  fileName: ""
+};
+
+/* ------------------------------------------------------------------ *
+ * 解析
+ * ------------------------------------------------------------------ */
+
+function parseFile(buffer) {
+  var u8 = new Uint8Array(buffer);
+  var dv = new DataView(buffer);
+
+  if (u8.length < HEADER_SIZE) {
+    throw new Error("文件只有 " + u8.length + " 字节，连 512 字节的文件头都不够。");
+  }
+
+  var magic = "";
+  for (var m = 0; m < 8; m++) {
+    magic += String.fromCharCode(u8[m]);
+  }
+  if (magic !== MAGIC) {
+    throw new Error("文件头不是 CANLOG01（实际读到 \"" + magic + "\"），可能不是本程序写的日志。");
+  }
+
+  var recordSize = dv.getUint32(8, true);
+  if (recordSize !== RECORD_SIZE) {
+    throw new Error("记录长度字段是 " + recordSize + "，本工具只支持 32 字节记录。");
+  }
+
+  var count = Math.floor((u8.length - HEADER_SIZE) / RECORD_SIZE);
+  if (count <= 0) {
+    throw new Error("文件里没有任何完整记录（可能只写了文件头，或者停止录制时数据没落盘）。");
+  }
+
+  var frames = new Array(count);
+  for (var i = 0; i < count; i++) {
+    var off = HEADER_SIZE + i * RECORD_SIZE;
+    var data = new Array(8);
+    for (var b = 0; b < 8; b++) {
+      data[b] = u8[off + 12 + b];
+    }
+    frames[i] = {
+      index: i,
+      ts: dv.getUint32(off, true),
+      id: dv.getUint32(off + 4, true),
+      dlc: u8[off + 8],
+      ide: u8[off + 9],
+      rtr: u8[off + 10],
+      data: data,
+      t: 0,
+      angle: null,
+      turns: null,
+      rpm: null,
+      amp: null
+    };
+  }
+
+  /* 32 位微秒时间戳约 71.6 分钟回绕一次，累加成 64 位相对时间 */
+  var wrap = 0;
+  var prev = frames[0].ts;
+  var base = frames[0].ts;
+  for (var k = 0; k < frames.length; k++) {
+    var raw = frames[k].ts;
+    if (raw < prev) {
+      wrap += 4294967296;
+    }
+    prev = raw;
+    frames[k].t = raw + wrap - base;
+  }
+
+  /* 解码电机应答帧 */
+  for (var j = 0; j < frames.length; j++) {
+    decodeMotor(frames[j]);
+  }
+
+  return frames;
+}
+
+/*
+ * 解码电机应答帧。
+ *
+ *   6 字节（单圈绝对位置模式）：
+ *     data[0]      电机 ID
+ *     data[1..2]   位置 16 位，0x8000 = 0 度，32768 码 = 360 度
+ *     data[3]      速度 [11:4]
+ *     data[4]      速度 [3:0] | 电流 [11:8]
+ *     data[5]      电流 [7:0]
+ *
+ *   8 字节（增量位置模式）：速度和电流的位置完全一样，只是位置扩成 32 位
+ *     data[1..2]   位置低 16 位
+ *     data[6..7]   位置高 16 位
+ *     位置 32 位 = data[6]<<24 | data[7]<<16 | data[1]<<8 | data[2]
+ *     1048576 码 = 1 圈
+ */
+function decodeMotor(f) {
+  if (f.ide !== 0 || f.id !== HOST_ID || f.dlc < 6 || f.rtr !== 0) {
+    return;
+  }
+
+  var d = f.data;
+
+  if (f.dlc >= 8) {
+    var pos32 = ((d[6] << 24) | (d[7] << 16) | (d[1] << 8) | d[2]) >>> 0;
+    if (pos32 >= 2147483648) {
+      pos32 -= 4294967296;
+    }
+    f.pos32 = pos32;
+    f.turns = pos32 / INC_COUNTS_PER_TURN;
+    var frac = pos32 % INC_COUNTS_PER_TURN;
+    if (frac < 0) {
+      frac += INC_COUNTS_PER_TURN;
+    }
+    f.angle = (frac / INC_COUNTS_PER_TURN) * 360;
+  } else {
+    var p16 = (d[1] << 8) | d[2];
+    /* 单圈模式：对 0x8000 的偏移量按 32768 取模，得到 0~360 的锯齿波 */
+    f.angle = (((p16 - 32768) & 0x7FFF) * 360) / 32768;
+    f.turns = null;
+  }
+
+  var velRaw = (d[3] << 4) | (d[4] >> 4);
+  var curRaw = ((d[4] & 0x0F) << 8) | d[5];
+  var rads = ((velRaw - VEL_ZERO) / VEL_ZERO) * VEL_FULL_RADS;
+
+  f.rads = rads;
+  f.rpm = rads * 60 / (2 * Math.PI);
+  f.amp = ((curRaw - CUR_ZERO) / CUR_ZERO) * CUR_FULL_AMP;
+  f.velRaw = velRaw;
+  f.curRaw = curRaw;
+}
+
+/* ------------------------------------------------------------------ *
+ * 统计
+ * ------------------------------------------------------------------ */
+
+function buildStats(frames) {
+  var durationUs = frames.length > 1 ? frames[frames.length - 1].t : 0;
+  var durationS = durationUs / 1e6;
+
+  var deltas = [];
+  var gaps = 0;
+  var silences = 0;
+  for (var i = 1; i < frames.length; i++) {
+    var dt = frames[i].t - frames[i - 1].t;
+    deltas.push(dt);
+    if (dt > GAP_MIN_US && dt < GAP_MAX_US) {
+      gaps++;
+    } else if (dt >= GAP_MAX_US) {
+      silences++;
+    }
+  }
+
+  var sum = 0;
+  var min = Infinity;
+  var max = 0;
+  for (var k = 0; k < deltas.length; k++) {
+    sum += deltas[k];
+    if (deltas[k] < min) { min = deltas[k]; }
+    if (deltas[k] > max) { max = deltas[k]; }
+  }
+
+  /* 按 ID 分布 */
+  var ids = {};
+  for (var j = 0; j < frames.length; j++) {
+    var key = (frames[j].ide ? "EXT" : "STD") + " 0x" + frames[j].id.toString(16).toUpperCase();
+    ids[key] = (ids[key] || 0) + 1;
+  }
+
+  var motorFrames = 0;
+  for (var n = 0; n < frames.length; n++) {
+    if (frames[n].angle !== null) {
+      motorFrames++;
+    }
+  }
+
+  return {
+    count: frames.length,
+    motorFrames: motorFrames,
+    durationS: durationS,
+    fps: durationS > 0 ? frames.length / durationS : 0,
+    dtMin: deltas.length ? min : 0,
+    dtMean: deltas.length ? sum / deltas.length : 0,
+    dtMax: max,
+    gaps: gaps,
+    silences: silences,
+    ids: ids
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * 渲染
+ * ------------------------------------------------------------------ */
+
+function renderCards(st) {
+  var cards = [];
+
+  cards.push({ k: "总帧数", v: st.count.toLocaleString(), u: "帧", cls: "" });
+  cards.push({ k: "录制时长", v: st.durationS.toFixed(2), u: "秒", cls: "" });
+  cards.push({ k: "平均帧率", v: st.fps.toFixed(1), u: "帧/秒", cls: "" });
+  cards.push({
+    k: "疑似丢帧",
+    v: st.gaps.toLocaleString(),
+    u: "次",
+    cls: st.gaps === 0 ? "ok" : (st.gaps < 10 ? "warn" : "bad")
+  });
+  cards.push({
+    k: "总线静默",
+    v: st.silences.toLocaleString(),
+    u: "次",
+    cls: ""
+  });
+  cards.push({
+    k: "帧间隔",
+    v: st.dtMean.toFixed(0),
+    u: "us 平均",
+    cls: ""
+  });
+
+  var html = "";
+  for (var i = 0; i < cards.length; i++) {
+    var c = cards[i];
+    html += '<div class="card ' + c.cls + '">' +
+            '<div class="k">' + c.k + '</div>' +
+            '<div class="v">' + c.v + '<span class="u">' + c.u + '</span></div>' +
+            '</div>';
+  }
+  document.getElementById("cards").innerHTML = html;
+}
+
+function renderTable(frames) {
+  var rows = [];
+  var limit = Math.min(frames.length, 200);
+
+  for (var i = 0; i < limit; i++) {
+    var f = frames[i];
+    var hex = "";
+    for (var b = 0; b < f.dlc && b < 8; b++) {
+      hex += (f.data[b] < 16 ? "0" : "") + f.data[b].toString(16).toUpperCase() + " ";
+    }
+
+    rows.push(
+      "<tr>" +
+      "<td>" + f.index + "</td>" +
+      "<td>" + (f.t / 1000).toFixed(3) + "</td>" +
+      "<td>0x" + f.id.toString(16).toUpperCase() + "</td>" +
+      "<td>" + (f.ide ? "EXT" : "STD") + "</td>" +
+      "<td>" + f.dlc + "</td>" +
+      "<td>" + (f.turns === null ? "-" : f.turns.toFixed(3)) + "</td>" +
+      "<td>" + (f.angle === null ? "-" : f.angle.toFixed(2)) + "</td>" +
+      "<td>" + (f.rpm === null ? "-" : f.rpm.toFixed(2)) + "</td>" +
+      "<td>" + (f.amp === null ? "-" : f.amp.toFixed(2)) + "</td>" +
+      "<td style=\"font-family:Consolas,monospace\">" + hex.trim() + "</td>" +
+      "</tr>"
+    );
+  }
+
+  document.getElementById("tbody").innerHTML = rows.join("");
+
+  var note = "共 " + frames.length + " 帧，其中 " + state.stats.motorFrames +
+             " 帧是电机应答（ID=0x" + HOST_ID.toString(16).toUpperCase() + " 的标准帧）。";
+  if (frames.length > 200) {
+    note += " 表格只显示前 200 条，完整数据请导出 CSV。";
+  }
+
+  var idKeys = Object.keys(state.stats.ids);
+  if (idKeys.length) {
+    var parts = [];
+    for (var k = 0; k < idKeys.length; k++) {
+      parts.push(idKeys[k] + " × " + state.stats.ids[idKeys[k]]);
+    }
+    note += "<br>ID 分布：" + parts.join("，");
+  }
+
+  document.getElementById("note").innerHTML = note;
+}
+
+function seriesFor(mode) {
+  var out = [];
+  for (var i = 0; i < state.frames.length; i++) {
+    var f = state.frames[i];
+    var y = null;
+
+    if (mode === "angle") {
+      if (f.turns !== null) {
+        y = f.turns * 360;
+      } else if (f.angle !== null) {
+        y = f.angle;
+      }
+    } else if (mode === "speed") {
+      y = f.rpm;
+    } else if (mode === "current") {
+      y = f.amp;
+    }
+
+    if (y !== null && isFinite(y)) {
+      out.push({ x: f.t / 1e6, y: y });
+    }
+  }
+  return out;
+}
+
+function drawChart(mode) {
+  var canvas = document.getElementById("chart");
+  var dpr = window.devicePixelRatio || 1;
+  var cssW = canvas.clientWidth;
+  var cssH = 300;
+
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+
+  var ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  var data = seriesFor(mode);
+  if (data.length < 2) {
+    ctx.fillStyle = "#656d76";
+    ctx.font = "13px -apple-system, Segoe UI, Microsoft YaHei, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("没有可绘制的数据", cssW / 2, cssH / 2);
+    return;
+  }
+
+  var padL = 58, padR = 16, padT = 14, padB = 30;
+  var plotW = cssW - padL - padR;
+  var plotH = cssH - padT - padB;
+
+  var x0 = data[0].x;
+  var x1 = data[data.length - 1].x;
+  if (x1 <= x0) { x1 = x0 + 1; }
+
+  var yMin = Infinity, yMax = -Infinity;
+  for (var i = 0; i < data.length; i++) {
+    if (data[i].y < yMin) { yMin = data[i].y; }
+    if (data[i].y > yMax) { yMax = data[i].y; }
+  }
+  if (yMax - yMin < 1e-6) {
+    yMin -= 1;
+    yMax += 1;
+  }
+  var padY = (yMax - yMin) * 0.08;
+  yMin -= padY;
+  yMax += padY;
+
+  function sx(x) { return padL + (x - x0) / (x1 - x0) * plotW; }
+  function sy(y) { return padT + (1 - (y - yMin) / (yMax - yMin)) * plotH; }
+
+  /* 网格 + 纵轴刻度 */
+  ctx.strokeStyle = "#eef0f3";
+  ctx.fillStyle = "#656d76";
+  ctx.font = "11px -apple-system, Segoe UI, Microsoft YaHei, sans-serif";
+  ctx.lineWidth = 1;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+
+  var ticks = 5;
+  for (var t = 0; t <= ticks; t++) {
+    var yy = padT + plotH * t / ticks;
+    var val = yMax - (yMax - yMin) * t / ticks;
+
+    ctx.beginPath();
+    ctx.moveTo(padL, yy);
+    ctx.lineTo(padL + plotW, yy);
+    ctx.stroke();
+
+    var label = Math.abs(val) >= 1000 ? val.toFixed(0)
+              : (Math.abs(val) >= 10 ? val.toFixed(1) : val.toFixed(2));
+    ctx.fillText(label, padL - 8, yy);
+  }
+
+  /* 横轴刻度 */
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (var s = 0; s <= 5; s++) {
+    var xx = padL + plotW * s / 5;
+    var tv = x0 + (x1 - x0) * s / 5;
+    ctx.fillText(tv.toFixed(2) + "s", xx, padT + plotH + 8);
+  }
+
+  /* 折线：点太多时按像素列取 min/max，避免画 6 万个点 */
+  ctx.strokeStyle = "#2563eb";
+  ctx.lineWidth = 1.4;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+
+  var maxPoints = plotW * 2;
+  if (data.length <= maxPoints) {
+    for (var a = 0; a < data.length; a++) {
+      var px = sx(data[a].x);
+      var py = sy(data[a].y);
+      if (a === 0) { ctx.moveTo(px, py); } else { ctx.lineTo(px, py); }
+    }
+  } else {
+    var bucket = data.length / plotW;
+    for (var col = 0; col < plotW; col++) {
+      var start = Math.floor(col * bucket);
+      var end = Math.min(data.length, Math.floor((col + 1) * bucket));
+      if (end <= start) { continue; }
+
+      var lo = Infinity, hi = -Infinity;
+      for (var m = start; m < end; m++) {
+        if (data[m].y < lo) { lo = data[m].y; }
+        if (data[m].y > hi) { hi = data[m].y; }
+      }
+      var cx = padL + col;
+      if (col === 0) {
+        ctx.moveTo(cx, sy(hi));
+      } else {
+        ctx.lineTo(cx, sy(hi));
+      }
+      if (hi !== lo) {
+        ctx.lineTo(cx, sy(lo));
+      }
+    }
+  }
+  ctx.stroke();
+
+  /* 图例文字 */
+  var names = { angle: "累计角度 (deg)", speed: "转速 (rpm)", current: "电流 (A)" };
+  document.getElementById("lg-text").textContent = names[mode];
+  document.getElementById("lg-range").textContent =
+    "范围 " + yMin.toFixed(2) + " ~ " + yMax.toFixed(2) +
+    "　时间 " + x0.toFixed(2) + " ~ " + x1.toFixed(2) + " s";
+}
+
+/* ------------------------------------------------------------------ *
+ * 导出 CSV
+ * ------------------------------------------------------------------ */
+
+function exportCsv() {
+  var lines = [];
+  lines.push("index,time_s,ts_us,id_hex,ide,dlc,turns,angle_deg,rpm,current_a,data_hex");
+
+  for (var i = 0; i < state.frames.length; i++) {
+    var f = state.frames[i];
+    var hex = "";
+    for (var b = 0; b < f.dlc && b < 8; b++) {
+      hex += (f.data[b] < 16 ? "0" : "") + f.data[b].toString(16).toUpperCase();
+    }
+
+    lines.push([
+      f.index,
+      (f.t / 1e6).toFixed(6),
+      f.ts,
+      "0x" + f.id.toString(16).toUpperCase(),
+      f.ide,
+      f.dlc,
+      f.turns === null ? "" : f.turns.toFixed(6),
+      f.angle === null ? "" : f.angle.toFixed(3),
+      f.rpm === null ? "" : f.rpm.toFixed(4),
+      f.amp === null ? "" : f.amp.toFixed(4),
+      hex
+    ].join(","));
+  }
+
+  var blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = (state.fileName.replace(/\.bin$/i, "") || "canlog") + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+}
+
+/* ------------------------------------------------------------------ *
+ * 交互
+ * ------------------------------------------------------------------ */
+
+function showError(msg) {
+  var el = document.getElementById("error");
+  el.textContent = msg;
+  el.hidden = false;
+  document.getElementById("result").hidden = true;
+}
+
+function handleFile(file) {
+  document.getElementById("error").hidden = true;
+
+  var reader = new FileReader();
+  reader.onload = function (ev) {
+    try {
+      var frames = parseFile(ev.target.result);
+      state.frames = frames;
+      state.fileName = file.name;
+      state.stats = buildStats(frames);
+
+      renderCards(state.stats);
+      renderTable(frames);
+      document.getElementById("result").hidden = false;
+      drawChart(state.chartMode);
+    } catch (err) {
+      showError("解析失败：" + err.message);
+    }
+  };
+  reader.onerror = function () {
+    showError("读取文件失败，可能文件被占用或权限不足。");
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function setup() {
+  var drop = document.getElementById("drop");
+  var input = document.getElementById("file");
+
+  drop.addEventListener("click", function () { input.click(); });
+
+  input.addEventListener("change", function () {
+    if (input.files && input.files[0]) {
+      handleFile(input.files[0]);
+    }
+  });
+
+  ["dragenter", "dragover"].forEach(function (name) {
+    drop.addEventListener(name, function (e) {
+      e.preventDefault();
+      drop.classList.add("over");
+    });
+  });
+
+  ["dragleave", "drop"].forEach(function (name) {
+    drop.addEventListener(name, function (e) {
+      e.preventDefault();
+      drop.classList.remove("over");
+    });
+  });
+
+  drop.addEventListener("drop", function (e) {
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files[0]) {
+      handleFile(files[0]);
+    }
+  });
+
+  var modes = [
+    ["btn-angle", "angle"],
+    ["btn-speed", "speed"],
+    ["btn-current", "current"]
+  ];
+
+  modes.forEach(function (pair) {
+    document.getElementById(pair[0]).addEventListener("click", function () {
+      state.chartMode = pair[1];
+      if (state.frames.length) {
+        drawChart(pair[1]);
+      }
+    });
+  });
+
+  document.getElementById("btn-csv").addEventListener("click", exportCsv);
+
+  window.addEventListener("resize", function () {
+    if (state.frames.length) {
+      drawChart(state.chartMode);
+    }
+  });
+}
+
+setup();
+</script>
+</body>
+</html>

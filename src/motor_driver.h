@@ -79,8 +79,8 @@
  * 对应的普通指令帧：80 00 8B 60 00 00 08 20
  *   位置=0x8000(0度)  速度=0x8B6  Kp=0  Kd=0  力矩=0x820
  */
-#define MOTOR_TARGET_SPEED_RPM  50.0f  /* 目标转速，单位 RPM */
-#define MOTOR_TARGET_CURRENT_A  0.5f   /* 运行最大电流，单位 A */
+#define MOTOR_TARGET_SPEED_RPM  180.0f  /* 目标转速，单位 RPM */
+#define MOTOR_TARGET_CURRENT_A  1.0f   /* 运行最大电流，单位 A */
 
 /*
  * 初始化时是否把当前位置设为零点（发 FF FF FF FF FF FF FF FE）。
