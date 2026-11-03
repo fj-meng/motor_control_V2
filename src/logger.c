@@ -25,14 +25,15 @@
 /* 发布游标前的内存屏障：保证记录体先落地，再让消费者看到新数据。 */
 #define LOG_BARRIER()   __asm__ __volatile__ ("dmb sy" : : : "memory")
 
-/* 文件头占满一个扇区，前 24 字节有用，其余补零。 */
+/* 文件头占满一个扇区，前 28 字节有用，其余补零。 */
 typedef struct {
 	char Magic[8];      /* "CANLOG01" */
 	u32  RecordSize;    /* 32 */
-	u32  Version;       /* 1 */
-	u32  Reserved;
+	u32  Version;       /* 2 */
+	u32  Flags;         /* bit0 = UtcOffsetSec 有效 */
+	s32  UtcOffsetSec;  /* UTC_sec = sec_cnt + UtcOffsetSec */
 	u32  StartTick;
-	u8   Pad[LOG_HEADER_SIZE - 24U];
+	u8   Pad[LOG_HEADER_SIZE - 28U];
 } LogHeader;
 
 /* 结构体大小必须严格等于 32，否则扇区对齐的假设就不成立了。 */
@@ -62,6 +63,16 @@ static u64 LastFlushTick;
 /* 最近收到的一帧，只由主循环在 Logger_Process() 里更新。 */
 static LogRecord Latest;
 static u32 LatestValid;
+
+/*
+ * UTC 偏移量：UTC_sec = sec_cnt + UtcOffsetSec。
+ *
+ * 只由串口命令 setutc 改一次，之后一直不变。录制时写进文件头。
+ * 注意它和记录里的 AbsNs 是同一套基准：AbsNs 来自 sec_cnt，
+ * 所以 utc_ns = AbsNs + UtcOffsetSec × 1e9 对整份文件都成立。
+ */
+static s32 UtcOffsetSec;
+static u8  UtcOffsetValid;
 
 /* 超时阈值换算成全局定时器的计数。 */
 #define LOG_TIMEOUT_TICKS \
@@ -130,6 +141,8 @@ int Logger_Init(void)
 	WriteCount = 0U;
 	ErrorCount = 0U;
 	LatestValid = 0U;
+	UtcOffsetSec = 0;
+	UtcOffsetValid = 0U;
 
 	/* 第三个参数 1 = 立即挂载。挂载时才真正初始化 SD 控制器。 */
 	fr = f_mount(&FatFs, "0:/", 1);
@@ -190,8 +203,9 @@ int Logger_StartRecording(void)
 
 	memcpy(Header.Magic, "CANLOG01", 8U);
 	Header.RecordSize = LOG_RECORD_SIZE;
-	Header.Version = 1U;
-	Header.Reserved = 0U;
+	Header.Version = 2U;
+	Header.Flags = (UtcOffsetValid != 0U) ? LOG_HDR_FLAG_UTC_VALID : 0U;
+	Header.UtcOffsetSec = UtcOffsetSec;
 	Header.StartTick = (u32)Logger_Now();
 
 	fr = f_write(&File, &Header, LOG_HEADER_SIZE, &bw);
@@ -225,6 +239,75 @@ int Logger_StartRecording(void)
 int Logger_IsRecording(void)
 {
 	return (Recording != 0U) ? 1 : 0;
+}
+
+int Logger_SetUtcOffset(s32 Offset, int Valid)
+{
+	u32 W[2];
+	UINT bw = 0U;
+	FRESULT fr;
+	DWORD End;
+
+	UtcOffsetSec = Offset;
+	UtcOffsetValid = (Valid != 0) ? 1U : 0U;
+
+	/* 没在录制：只更新内存，下次 Logger_StartRecording() 会写进新文件头。 */
+	if (Recording == 0U) {
+		return XST_SUCCESS;
+	}
+
+	/*
+	 * 正在录制：原地改写文件头的 Flags + UtcOffsetSec（偏移 16，共 8 字节）。
+	 *
+	 * 为什么这是安全的：
+	 *   ① 只覆盖文件头里两个固定字段，一个字节的记录区都不碰；
+	 *   ② 记录里存的是「上电后的单调时间」，偏移量对整份文件是同一个标量，
+	 *      所以录制中途设和一开始设，事后算出来的 UTC 完全一样；
+	 *   ③ 写完立刻 f_sync，然后 f_lseek 回到文件末尾继续追加。
+	 *
+	 * 所以「忘了先 setutc」不会毁掉这次录制，录完再补也行（只要文件还没关）。
+	 */
+	End = File.fsize;
+	W[0] = (UtcOffsetValid != 0U) ? LOG_HDR_FLAG_UTC_VALID : 0U;
+	W[1] = (u32)Offset;
+
+	fr = f_lseek(&File, (DWORD)LOG_HDR_OFF_FLAGS);
+	if (fr != FR_OK) {
+		Logger_PrintResult("seek header", fr);
+		(void)f_lseek(&File, End);
+		return XST_FAILURE;
+	}
+
+	fr = f_write(&File, W, 8U, &bw);
+	if ((fr != FR_OK) || (bw != 8U)) {
+		Logger_PrintResult("rewrite header", fr);
+		(void)f_lseek(&File, End);
+		return XST_FAILURE;
+	}
+
+	fr = f_sync(&File);
+	if (fr != FR_OK) {
+		Logger_PrintResult("sync header", fr);
+	}
+
+	/* 必须回到末尾，否则后面的记录会覆盖掉已有数据。 */
+	fr = f_lseek(&File, End);
+	if (fr != FR_OK) {
+		Logger_PrintResult("seek end", fr);
+		return XST_FAILURE;
+	}
+
+	return XST_SUCCESS;
+}
+
+s32 Logger_GetUtcOffset(void)
+{
+	return UtcOffsetSec;
+}
+
+int Logger_IsUtcValid(void)
+{
+	return (UtcOffsetValid != 0U) ? 1 : 0;
 }
 
 /*
@@ -303,7 +386,8 @@ int Logger_StopRecording(void)
 	return XST_SUCCESS;
 }
 
-void Logger_Push(u32 Id, u8 Ide, u8 Rtr, u8 Dlc, const u8 *Data, u32 Ts)
+void Logger_PushEx(u32 Id, u8 Ide, u8 Rtr, u8 Dlc, const u8 *Data,
+		u32 Ts, u64 AbsNs)
 {
 	u32 Head = RingHead;
 	LogRecord *Rec;
@@ -323,9 +407,22 @@ void Logger_Push(u32 Id, u8 Ide, u8 Rtr, u8 Dlc, const u8 *Data, u32 Ts)
 	Rec->Flag = 0U;
 	memcpy(Rec->Data, Data, 8U);
 
+	/*
+	 * 绝对时间拆成两个 u32 存，见 logger.h 里的说明。
+	 * 这里是纯移位和截断，中断里零开销。
+	 */
+	Rec->AbsNsLo = (u32)(AbsNs & 0xFFFFFFFFULL);
+	Rec->AbsNsHi = (u32)(AbsNs >> 32);
+
 	/* 记录体全部写完，才允许消费者看到这一条。 */
 	LOG_BARRIER();
 	RingHead = Head + 1U;
+}
+
+/* 老接口：不带绝对时间。保留是为了兼容，新代码请用 Logger_PushEx。 */
+void Logger_Push(u32 Id, u8 Ide, u8 Rtr, u8 Dlc, const u8 *Data, u32 Ts)
+{
+	Logger_PushEx(Id, Ide, Rtr, Dlc, Data, Ts, 0ULL);
 }
 
 void Logger_Flush(void)
