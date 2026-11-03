@@ -12,6 +12,7 @@
 #include "can0_config.h"
 #include "can0_driver.h"
 #include "logger.h"
+#include "timer_pl.h"
 #include "xcanps.h"
 #include "xcanps_hw.h"
 #include "xscugic.h"
@@ -232,11 +233,26 @@ static void Can0_RecvHandler(void *CallBackRef)
 	u32 Id2;
 	u32 Id;
 	u32 Ts;
+	u64 AbsNs;
 	u8 Ide;
 	u8 Rtr;
 	u8 Dlc;
 
 	(void)CallBackRef;
+
+	/*
+	 * 第一件事：抓 PL 的绝对时间。
+	 *
+	 * 必须放在取帧之前，而且整次中断只读一次：
+	 *   - 放在循环里读，N 帧就要读 N 次，每帧多两次 AXI 事务（约 0.6us）；
+	 *   - 一次中断通常只有 1 帧（1kHz 上传），读一次就够；
+	 *   - 万一 FIFO 积压了几帧，它们共用这个基准也不会错乱顺序，
+	 *     真正的先后关系由 Ts 精确给出（30ns），比这里精细得多。
+	 *
+	 * TimerPl_IsReady() 是纯内存判断，PL 没就绪时 AbsNs 记 0，
+	 * 事后用 parse_log.py 一眼就能看出哪些记录没有绝对时间。
+	 */
+	AbsNs = (TimerPl_IsReady() != 0) ? TimerPl_ReadNs() : 0ULL;
 
 	while (XCanPs_IsRxEmpty(&Can0) == FALSE) {
 		if (XCanPs_Recv(&Can0, Raw) != XST_SUCCESS) {
@@ -263,7 +279,7 @@ static void Can0_RecvHandler(void *CallBackRef)
 
 		/* XCanPs_Recv 已对 DW1R/DW2R 做过字节序转换，
 		 * 小端 ARM 上 &Raw[2] 的内存首字节就是数据字节 0。 */
-		Logger_Push(Id, Ide, Rtr, Dlc, (const u8 *)&Raw[2], Ts);
+		Logger_PushEx(Id, Ide, Rtr, Dlc, (const u8 *)&Raw[2], Ts, AbsNs);
 	}
 }
 

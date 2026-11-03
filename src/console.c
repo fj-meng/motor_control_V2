@@ -14,9 +14,11 @@
 #include "can0_driver.h"
 #include "logger.h"
 #include "motor_driver.h"
+#include "timer_pl.h"
 #include "xil_io.h"
 #include "xil_printf.h"
 #include "xstatus.h"
+#include "sleep.h"
 #include "xuartps_hw.h"
 #include <string.h>
 
@@ -216,6 +218,161 @@ static void Console_Execute(const char *Cmd)
 	}
 
 	/*
+	 * setutc <Unix 秒>：用电脑的时间给 PL 建立 UTC 映射。
+	 *
+	 * PL 自己只知道「上电后过了多少纳秒」，不知道是几点。GNSS 的 1PPS
+	 * 只告诉它「整秒到了」，也不告诉它是哪一秒。所以必须外部喂一个起点。
+	 *
+	 * 这里不是「每秒把秒数 +1」——那样软件慢半拍就会拼出错的时间。
+	 * 而是只算一个偏移量：offset = UTC秒 − sec_cnt。之后由 PPS 硬件保持
+	 * sec_cnt 递增，UTC 自然跟着走，不会漂，也不存在每秒对齐的竞争。
+	 *
+	 * 什么时候发：尽量在秒的中间（比如 .500）发。传输延迟几毫秒也不会
+	 * 跨秒，对出来的时间准到毫秒级。
+	 *
+	 * 不带参数时显示当前 UTC。
+	 */
+	if (strncmp(Cmd, "setutc", 6) == 0) {
+		const char *Arg = Cmd + 6;
+		u32 Sec = 0U;
+		u8 Digits = 0U;
+		u32 Retry;
+		u64 NowSec;
+		u32 Y, Mo, D, H, Mi, S;
+
+		while (*Arg == ' ') {
+			++Arg;
+		}
+
+		/* 不带参数：显示当前 UTC */
+		if (*Arg == '\0') {
+			if (TimerPl_UtcIsValid() == 0) {
+				xil_printf("CMD: UTC not set."
+						" send: setutc <unix_seconds>\r\n");
+				return;
+			}
+			NowSec = TimerPl_ReadNs() / 1000000000ULL;
+			Sec = (u32)((s32)NowSec + TimerPl_GetUtcOffset());
+			TimerPl_UnixToUtc(Sec, &Y, &Mo, &D, &H, &Mi, &S);
+			xil_printf("CMD: UTC now = %04u-%02u-%02u %02u:%02u:%02u"
+					" UTC (offset=%d s)\r\n",
+					Y, Mo, D, H, Mi, S, (int)TimerPl_GetUtcOffset());
+			return;
+		}
+
+		while ((*Arg >= '0') && (*Arg <= '9')) {
+			u32 Next = (Sec * 10U) + (u32)(*Arg - '0');
+
+			if (Next < Sec) {          /* 溢出：超过 4294967295 */
+				xil_printf("CMD: value too large\r\n");
+				return;
+			}
+			Sec = Next;
+			++Arg;
+			++Digits;
+		}
+
+		if ((Digits == 0U) || (*Arg != '\0')) {
+			xil_printf("CMD: usage: setutc <unix_seconds>"
+					" (e.g. 1793596800)\r\n");
+			return;
+		}
+
+		/*
+		 * 太靠近秒边界时 TimerPl_SetUtcSeconds() 会拒绝——那条命令可能
+		 * 跨了秒，里面的秒数属于上一秒。重试几次，每次 20ms，最多 100ms。
+		 *
+		 * 为什么不能重试太久：喂进来的 Sec 是「发命令那一刻」的秒，
+		 * 一旦拖过下一秒它就过期了。100ms 足够跳出 10ms 的边界保护区，
+		 * 又不会跨秒。
+		 */
+		for (Retry = 0U; Retry < 5U; ++Retry) {
+			if (TimerPl_SetUtcSeconds(Sec) == XST_SUCCESS) {
+				break;
+			}
+			usleep(20000U);
+		}
+
+		if (Retry >= 5U) {
+			xil_printf("CMD: setutc FAILED (too close to second edge),"
+					" send it again mid-second\r\n");
+			return;
+		}
+
+		/* 把偏移量写进日志文件头，事后解析才知道怎么换算成 UTC */
+		(void)Logger_SetUtcOffset(TimerPl_GetUtcOffset(), 1);
+
+		TimerPl_UnixToUtc(Sec, &Y, &Mo, &D, &H, &Mi, &S);
+		xil_printf("CMD: UTC = %04u-%02u-%02u %02u:%02u:%02u,"
+				" offset=%d s (%s)\r\n",
+				Y, Mo, D, H, Mi, S, (int)TimerPl_GetUtcOffset(),
+				(Logger_IsRecording() != 0) ?
+					"file header updated" : "stored for next file");
+		return;
+	}
+
+	/*
+	 * motorspeed <rpm>：改目标转速，不用重新 init、不用重启。
+	 *
+	 * 轮询开着的时候只改 MotorSpeedCode，定时器中断下一拍就生效，
+	 * 不会和中断抢 TX FIFO。
+	 *
+	 * **典型用法：motoron 之后再 motorspeed 0。**
+	 * 电机停下来，但轮询还在跑，数据照收——录「静止基线」（零漂、噪声、
+	 * 位置重复性）就靠这个。以前做不到，因为 motoroff 会连轮询一起停。
+	 *
+	 * 注意顺序：必须先 motoron（它才会使能电机 + 开轮询），再 motorspeed 0。
+	 * 反过来先 motoroff 的话电机是自由态，速度指令不会重新使能它。
+	 */
+	if (strncmp(Cmd, "motorspeed", 10) == 0) {
+		const char *Arg = Cmd + 10;
+		s32 Rpm = 0;
+		u8 Digits = 0U;
+		u8 Neg = 0U;
+
+		while (*Arg == ' ') {
+			++Arg;
+		}
+
+		if (*Arg == '\0') {
+			xil_printf("CMD: usage: motorspeed <rpm>, "
+					"e.g. 'motorspeed 0' to stop but keep polling\r\n");
+			return;
+		}
+
+		if (*Arg == '-') {
+			Neg = 1U;
+			++Arg;
+		} else if (*Arg == '+') {
+			++Arg;
+		}
+
+		while ((*Arg >= '0') && (*Arg <= '9')) {
+			Rpm = (Rpm * 10) + (s32)(*Arg - '0');
+			++Arg;
+			++Digits;
+		}
+
+		if ((Digits == 0U) || (*Arg != '\0')) {
+			xil_printf("CMD: usage: motorspeed <rpm>\r\n");
+			return;
+		}
+
+		if (Neg != 0U) {
+			Rpm = -Rpm;
+		}
+
+		/* 满量程 58.639 rad/s ≈ 560 RPM，超了也没意义 */
+		if ((Rpm > 560) || (Rpm < -560)) {
+			xil_printf("CMD: rpm out of range (-560..560)\r\n");
+			return;
+		}
+
+		(void)Motor_SetSpeedRpm((float)Rpm);
+		return;
+	}
+
+	/*
 	 * 复位 CAN 控制器。
 	 *
 	 * 心跳里的 tec/rec 涨到 128 以上就是「错误被动」了，收不到帧。
@@ -242,6 +399,10 @@ static void Console_Execute(const char *Cmd)
 		xil_printf("CMD: motorpoll N    - tail: 0=speed 1=stop+speed "
 				"2=speed+start 3=dither\r\n");
 		xil_printf("CMD: motorperiod N  - poll period in us (500..200000)\r\n");
+		xil_printf("CMD: motorspeed N   - set rpm without re-init;"
+				" 'motorspeed 0' stops but keeps polling\r\n");
+		xil_printf("CMD: setutc N       - set UTC from Unix seconds,"
+				" e.g. setutc 1793596800 (no arg = show)\r\n");
 		xil_printf("CMD: canreset       - reset CAN controller, clear errors\r\n");
 		return;
 	}

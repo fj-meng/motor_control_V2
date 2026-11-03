@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CANLOG 解算</title>
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --card: #ffffff;
+    --text: #1f1f1e;
+    --muted: #6b6a65;
+    --line: #e4e3de;
+    --accent: #185FA5;
+    --accent-bg: #eaf2fb;
+    --warn: #9a5b00;
+    --warn-bg: #fdf3e2;
+    --err: #a32d2d;
+    --err-bg: #fbeceb;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 20px 60px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 22px; font-size: 13px; }
+
+  .drop {
+    border: 2px dashed var(--line); border-radius: 12px;
+    background: var(--card); padding: 44px 20px; text-align: center;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-bg); }
+  .drop strong { display: block; font-size: 15px; font-weight: 500; margin-bottom: 6px; }
+  .drop span { color: var(--muted); font-size: 13px; }
+  #file { display: none; }
+
+  .msg { margin-top: 16px; padding: 12px 16px; border-radius: 8px; font-size: 13px; }
+  .msg.err { background: var(--err-bg); color: var(--err); }
+  .msg.warn { background: var(--warn-bg); color: var(--warn); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 12px; margin: 22px 0 18px; }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 10px; padding: 12px 14px; }
+  .card .k { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .card .v { font-size: 17px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .card .v small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 3px; }
+
+  .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .bar h2 { font-size: 15px; font-weight: 500; margin: 0 auto 0 0; }
+  button {
+    font: inherit; font-size: 13px; padding: 7px 14px; cursor: pointer;
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { opacity: .9; color: #fff; }
+
+  .tablewrap { background: var(--card); border: 1px solid var(--line);
+               border-radius: 10px; overflow: auto; max-height: 560px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { padding: 7px 10px; text-align: right; white-space: nowrap; }
+  th { position: sticky; top: 0; background: #f4f4f1; font-weight: 500;
+       color: var(--muted); border-bottom: 1px solid var(--line); z-index: 1; }
+  td { border-bottom: 1px solid #f0efeb; font-variant-numeric: tabular-nums; }
+  td.l, th.l { text-align: left; }
+  td.mono { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  tbody tr:hover { background: #fafaf8; }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  code { font-family: var(--mono); font-size: 12px; background: #f0efeb;
+         padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>CANLOG 解算</h1>
+  <p class="sub">把 <code>CANLOG.BIN</code> 拖进来，解出时间、角度、速度、电流。全部在浏览器本地完成，文件不上传。</p>
+
+  <div class="drop" id="drop">
+    <strong>把 CANLOG.BIN 拖到这里</strong>
+    <span>或者点一下选择文件</span>
+  </div>
+  <input type="file" id="file" accept=".bin,.BIN,application/octet-stream">
+
+  <div id="msg"></div>
+  <div id="result" hidden>
+    <div class="cards" id="cards"></div>
+    <div class="bar">
+      <h2>前 <span id="shown">200</span> 条</h2>
+      <button id="csv">导出 CSV</button>
+      <button id="txt">导出 TXT</button>
+      <button id="allcsv" class="primary">导出全部 CSV</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>#</th><th class="l">UTC 时间</th><th>上电 (s)</th>
+          <th>圈</th><th>角度 (°)</th><th>累计 (°)</th>
+          <th>rad/s</th><th>A</th><th class="l">原始数据</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <p class="note" id="foot"></p>
+  </div>
+</div>
+
+<script>
+const HEADER_SIZE = 512, RECORD_SIZE = 32;
+const VEL_ZERO = 0x0800, CUR_ZERO = 0x0800, POS_ZERO = 0x8000;
+const SPEED_FS = 58.639, CUR_FS = 32.0, COUNT_PER_TURN = 1048576;
+const PREVIEW = 200;
+const NS = 1000000000n;
+
+let g = null;   // 解析结果
+
+const $ = id => document.getElementById(id);
+const drop = $('drop'), fileInput = $('file');
+
+function showMsg(text, kind) {
+  const box = $('msg');
+  box.innerHTML = text ? `<div class="msg ${kind || 'err'}">${text}</div>` : '';
+}
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if (e.target.files[0]) readFile(e.target.files[0]); });
+['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => {
+  e.preventDefault(); drop.classList.add('over');
+}));
+['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => {
+  e.preventDefault(); drop.classList.remove('over');
+}));
+drop.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f) readFile(f);
+});
+
+function readFile(file) {
+  showMsg('');
+  const fr = new FileReader();
+  fr.onerror = () => showMsg('读文件失败');
+  fr.onload = () => {
+    try {
+      parse(fr.result, file.name);
+    } catch (err) {
+      $('result').hidden = true;
+      showMsg('解析失败：' + err.message);
+    }
+  };
+  fr.readAsArrayBuffer(file);
+}
+
+function parse(buf, name) {
+  const bytes = new Uint8Array(buf);
+  if (bytes.length < HEADER_SIZE) throw new Error(`文件只有 ${bytes.length} 字节，小于 512 字节文件头`);
+
+  const magic = String.fromCharCode(...bytes.slice(0, 8)).replace(/\0+$/, '');
+  if (magic !== 'CANLOG01') throw new Error(`文件头不是 CANLOG01，实际是 "${magic}"`);
+
+  const dv = new DataView(buf);
+  const recSize = dv.getUint32(8, true);
+  const version = dv.getUint32(12, true);
+  if (recSize !== RECORD_SIZE) throw new Error(`RecordSize=${recSize}，期望 32`);
+
+  let flags = 0, utcOff = 0;
+  if (version >= 2) { flags = dv.getUint32(16, true); utcOff = dv.getInt32(20, true); }
+  const utcValid = (flags & 1) !== 0;
+
+  const n = Math.floor((bytes.length - HEADER_SIZE) / RECORD_SIZE);
+  const recs = new Array(n);
+  for (let i = 0; i < n; i++) recs[i] = decodeRec(dv, HEADER_SIZE + i * RECORD_SIZE, i);
+
+  const utcNs = r => r.absNs > 0n && utcValid ? r.absNs + BigInt(utcOff) * NS : 0n;
+
+  g = { name, size: bytes.length, version, utcValid, utcOff, recs, utcNs };
+  render();
+}
+
+function decodeRec(dv, off, idx) {
+  const tsUs = dv.getUint32(off, true);
+  const id = dv.getUint32(off + 4, true);
+  const dlc = dv.getUint8(off + 8);
+  const ide = dv.getUint8(off + 9);
+  const rtr = dv.getUint8(off + 10);
+  const d = new Uint8Array(dv.buffer, dv.byteOffset + off + 12, 8);
+  const lo = dv.getUint32(off + 20, true);
+  const hi = dv.getUint32(off + 24, true);
+  const absNs = (BigInt(hi) << 32n) | BigInt(lo);
+
+  const r = { idx, tsUs, id, dlc, ide, rtr, data: d, absNs,
+              turns: null, deg: null, totalDeg: null, radS: null, amp: null };
+
+  if (ide !== 0 || rtr !== 0 || dlc < 6) return r;
+
+  const vel = (d[3] << 4) | (d[4] >> 4);
+  const cur = ((d[4] & 0x0F) << 8) | d[5];
+  r.radS = (vel - VEL_ZERO) / VEL_ZERO * SPEED_FS;
+  r.amp = (cur - CUR_ZERO) / CUR_ZERO * CUR_FS;
+
+  if (dlc >= 8) {
+    // 注意：JS 的 << 和 | 结果已经是「有符号 32 位」，所以拼出来就是正确的补码值，
+    // 不要再手动减 0x100000000（那样负位置会被减两次）。
+    const pos = ((d[6] << 24) | (d[7] << 16) | (d[1] << 8) | d[2]) | 0;
+    const turns = Math.floor(pos / COUNT_PER_TURN);
+    const rem = pos - turns * COUNT_PER_TURN;
+    r.turns = turns;
+    r.deg = rem * 360 / COUNT_PER_TURN;
+    r.totalDeg = pos * 360 / COUNT_PER_TURN;
+  } else {
+    const pos16 = (d[1] << 8) | d[2];
+    r.turns = 0;
+    r.deg = ((pos16 - POS_ZERO) & 0x7FFF) * 360 / POS_ZERO;
+    r.totalDeg = r.deg;
+  }
+  return r;
+}
+
+function fmtUtc(nsBig) {
+  if (nsBig === 0n) return '';
+  const sec = nsBig / NS, rem = nsBig % NS;
+  const iso = new Date(Number(sec) * 1000).toISOString().slice(0, 19);
+  return iso + '.' + rem.toString().padStart(9, '0') + 'Z';
+}
+
+function fmtUptime(nsBig) {
+  if (nsBig === 0n) return '';
+  const sec = nsBig / NS, rem = nsBig % NS;
+  return sec + '.' + rem.toString().padStart(9, '0');
+}
+
+function hexData(r) {
+  let s = '';
+  for (let i = 0; i < r.dlc && i < 8; i++) s += r.data[i].toString(16).padStart(2, '0').toUpperCase();
+  return s;
+}
+
+function render() {
+  const { recs, utcValid, utcOff } = g;
+  $('result').hidden = false;
+
+  // 一次遍历把统计全算出来。不要用 Math.max(...arr)：记录一多（几十万条）
+  // 展开成函数参数会直接爆栈。
+  let first = null, last = null, nGood = 0;
+  let minAng = Infinity, maxAng = -Infinity, nAng = 0;
+  let minSpd = Infinity, maxSpd = -Infinity, nSpd = 0;
+  const idSet = new Set();
+
+  for (const r of recs) {
+    idSet.add(r.id);
+    if (r.absNs > 0n) {
+      if (first === null) first = r;
+      last = r;
+      nGood++;
+    }
+    if (r.totalDeg !== null) {
+      if (r.totalDeg < minAng) minAng = r.totalDeg;
+      if (r.totalDeg > maxAng) maxAng = r.totalDeg;
+      nAng++;
+    }
+    if (r.radS !== null) {
+      if (r.radS < minSpd) minSpd = r.radS;
+      if (r.radS > maxSpd) maxSpd = r.radS;
+      nSpd++;
+    }
+  }
+
+  const span = (first && last) ? Number(last.absNs - first.absNs) / 1e9 : 0;
+  const ids = [...idSet].sort((a, b) => a - b);
+
+  const cards = [
+    ['文件', g.name, (g.size / 1024).toFixed(1) + ' KB'],
+    ['格式版本', 'v' + g.version, utcValid ? 'UTC 已对表' : 'UTC 未设置'],
+    ['记录数', recs.length, '32 字节/条'],
+    ['时间跨度', span.toFixed(3), 's'],
+    ['平均帧率', span > 0 ? (nGood / span).toFixed(1) : '-', '帧/秒'],
+    ['累计角度', nAng ? (maxAng - minAng).toFixed(2) : '-', '°'],
+    ['速度范围', nSpd ? minSpd.toFixed(1) + ' ~ ' + maxSpd.toFixed(1) : '-', 'rad/s'],
+    ['CAN ID', ids.map(x => '0x' + x.toString(16).toUpperCase()).join(' '), ''],
+  ];
+  $('cards').innerHTML = cards.map(([k, v, u]) =>
+    `<div class="card"><div class="k">${k}</div><div class="v">${v}${u ? `<small>${u}</small>` : ''}</div></div>`
+  ).join('');
+
+  if (!utcValid) {
+    showMsg('这个文件没有 UTC 偏移（录制前没发 <code>setutc</code>），时间列只能显示「上电后第几秒」。', 'warn');
+  }
+
+  const rows = recs.slice(0, PREVIEW).map(r => {
+    const utc = utcValid ? fmtUtc(g.utcNs(r)) : '—';
+    return `<tr>
+      <td>${r.idx}</td>
+      <td class="l">${utc}</td>
+      <td>${fmtUptime(r.absNs) || '—'}</td>
+      <td>${r.turns === null ? '—' : r.turns}</td>
+      <td>${r.deg === null ? '—' : r.deg.toFixed(3)}</td>
+      <td>${r.totalDeg === null ? '—' : r.totalDeg.toFixed(3)}</td>
+      <td>${r.radS === null ? '—' : r.radS.toFixed(2)}</td>
+      <td>${r.amp === null ? '—' : r.amp.toFixed(2)}</td>
+      <td class="l mono">${hexData(r)}</td>
+    </tr>`;
+  }).join('');
+  $('tbody').innerHTML = rows;
+  $('shown').textContent = Math.min(PREVIEW, recs.length);
+
+  $('foot').innerHTML = utcValid
+    ? `UTC 偏移 ${utcOff > 0 ? '+' : ''}${utcOff} s　·　导出的是全部 ${recs.length} 条，不只是上面这 ${Math.min(PREVIEW, recs.length)} 条`
+    : `导出的是全部 ${recs.length} 条　·　UTC 列为空，因为文件里没有偏移量`;
+}
+
+const HEAD = ['idx', 'utc', 'uptime_s', 'ts_us', 'id', 'dlc',
+              'turns', 'deg', 'total_deg', 'rad_s', 'amp', 'data_hex'];
+
+function rowOf(r) {
+  return [
+    r.idx,
+    g.utcValid ? fmtUtc(g.utcNs(r)) : '',
+    fmtUptime(r.absNs),
+    r.tsUs,
+    '0x' + r.id.toString(16).toUpperCase(),
+    r.dlc,
+    r.turns === null ? '' : r.turns,
+    r.deg === null ? '' : r.deg.toFixed(3),
+    r.totalDeg === null ? '' : r.totalDeg.toFixed(3),
+    r.radS === null ? '' : r.radS.toFixed(3),
+    r.amp === null ? '' : r.amp.toFixed(3),
+    hexData(r),
+  ];
+}
+
+function download(text, filename, mime) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function baseName() {
+  return (g.name || 'CANLOG').replace(/\.[^.]*$/, '');
+}
+
+$('csv').addEventListener('click', () => {
+  const body = g.recs.slice(0, PREVIEW).map(r => rowOf(r).join(',')).join('\n');
+  download('\uFEFF' + HEAD.join(',') + '\n' + body + '\n', baseName() + '_first200.csv', 'text/csv;charset=utf-8');
+});
+
+$('allcsv').addEventListener('click', () => {
+  const body = g.recs.map(r => rowOf(r).join(',')).join('\n');
+  download('\uFEFF' + HEAD.join(',') + '\n' + body + '\n', baseName() + '_all.csv', 'text/csv;charset=utf-8');
+});
+
+$('txt').addEventListener('click', () => {
+  const lines = [
+    'CANLOG 解算结果',
+    '文件: ' + g.name,
+    '记录数: ' + g.recs.length,
+    'UTC 偏移: ' + (g.utcValid ? g.utcOff + ' s' : '未设置'),
+    '字段: ' + HEAD.join(' / '),
+    '='.repeat(110),
+  ];
+  for (const r of g.recs) lines.push(rowOf(r).join('  '));
+  download(lines.join('\n') + '\n', baseName() + '.txt', 'text/plain;charset=utf-8');
+});
+</script>
+</body>
+</html>

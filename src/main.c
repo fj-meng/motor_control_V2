@@ -20,6 +20,7 @@
 #include "logger.h"
 #include "motor_can_commands.h"
 #include "motor_driver.h"
+#include "timer_pl.h"
 #include "xil_printf.h"
 #include "xstatus.h"
 #include "xtime_l.h"
@@ -139,6 +140,7 @@ static void PrintLogStatus(void)
 	XTime Now;
 	u64 Period;
 	u64 Elapsed;
+	u64 AbsNs;
 	Can0RxStats St;
 	LogRecord Rec;
 	u32 Rate;
@@ -156,6 +158,15 @@ static void PrintLogStatus(void)
 	if ((Started != 0U) && (Elapsed < Period)) {
 		return;
 	}
+
+	/*
+	 * 刷新晶振误差。放在这个时间门后面，天然就是每秒一次。
+	 *
+	 * 漏了这一行，TimerPl_ReadNs() 用的还是上一次的 ppm（甚至上电时的 0），
+	 * AbsNs 就退化成没校正的原始值，秒末误差能到几十微秒。
+	 * 函数内部只做两次 AXI 读 + 一个整数除法，约 1us，不影响打印节奏。
+	 */
+	(void)TimerPl_UpdatePpm();
 
 	Can0_GetRxStats(&St);
 	Ecr = Can0_GetErrorCounters();
@@ -193,23 +204,27 @@ static void PrintLogStatus(void)
 		Frames = Logger_GetFileFrames();
 		xil_printf("rx=%u/s tot=%u gap=%u ovf=%u drop=%u boff=%u"
 				" tec=%u rec=%u emask=%x"
-				" | poll=%u/s pmiss=%u tmode=%u tmiss=%u | REC: %u\r\n",
+				" | poll=%u/s pmiss=%u tmode=%u tmiss=%u"
+				" | REC: %u tppm=%d\r\n",
 				Rate, St.Frames, St.Gaps, St.FifoOverflow,
 				Logger_GetDropped(), St.BusOff,
 				Ecr & 0xFFU, (Ecr >> 8) & 0xFFU, Esr,
 				PollRate, Motor_GetPollMiss(),
 				(unsigned int)Motor_GetPollTail(),
-				Motor_GetPollTailMiss(), Frames);
+				Motor_GetPollTailMiss(), Frames,
+				(int)TimerPl_GetPpmX100());
 	} else {
 		xil_printf("rx=%u/s tot=%u gap=%u ovf=%u drop=%u boff=%u"
 				" tec=%u rec=%u emask=%x"
-				" | poll=%u/s pmiss=%u tmode=%u tmiss=%u | REC: off\r\n",
+				" | poll=%u/s pmiss=%u tmode=%u tmiss=%u"
+				" | REC: off tppm=%d\r\n",
 				Rate, St.Frames, St.Gaps, St.FifoOverflow,
 				Logger_GetDropped(), St.BusOff,
 				Ecr & 0xFFU, (Ecr >> 8) & 0xFFU, Esr,
 				PollRate, Motor_GetPollMiss(),
 				(unsigned int)Motor_GetPollTail(),
-				Motor_GetPollTailMiss());
+				Motor_GetPollTailMiss(),
+				(int)TimerPl_GetPpmX100());
 	}
 
 	if (Logger_GetLatest(&Rec) == 0) {
@@ -217,7 +232,32 @@ static void PrintLogStatus(void)
 		return;
 	}
 
-	xil_printf("latest: ts=%u id=0x%x %s dlc=%u data=",
+	/* 两个时间基准一起打出来：
+	 *   utc 是绝对时刻（AbsNs + 文件头里的偏移量），对过表才有；
+	 *   abs 是 PL 的上电后单调时间，没对表时它就是全部信息；
+	 *   ts  是 CAN 硬件的 16 位微秒计数（1.966ms 回绕），帧间精度 30ns。 */
+	AbsNs = ((u64)Rec.AbsNsHi << 32) | (u64)Rec.AbsNsLo;
+
+	if (Logger_IsUtcValid() != 0) {
+		u32 Y;
+		u32 Mo;
+		u32 D;
+		u32 H;
+		u32 Mi;
+		u32 S;
+		u64 UtcSec = AbsNs / 1000000000ULL;
+
+		TimerPl_UnixToUtc((u32)((s32)UtcSec + Logger_GetUtcOffset()),
+				&Y, &Mo, &D, &H, &Mi, &S);
+		xil_printf("latest: utc=%04u-%02u-%02uT%02u:%02u:%02u",
+				Y, Mo, D, H, Mi, S);
+	} else {
+		xil_printf("latest: utc=not-set");
+	}
+
+	xil_printf(" abs=%d.%09d ts=%u id=0x%x %s dlc=%u data=",
+			(int)(AbsNs / 1000000000ULL),
+			(int)(AbsNs % 1000000000ULL),
 			Rec.Ts, Rec.Id, (Rec.Ide != 0U) ? "EXT" : "STD", Rec.Dlc);
 
 	for (i = 0U; (i < Rec.Dlc) && (i < 8U); ++i) {
@@ -259,6 +299,32 @@ int main(void)
 	}
 
 	Console_Init();
+
+	/*
+	 * PL 时间基准。必须在开 CAN 中断之前初始化，否则第一批帧进中断时
+	 * TimerPl_IsReady() 还是 0，那批帧的 AbsNs 会是 0。
+	 *
+	 * 失败也继续跑：AbsNs 记 0，CAN 接收和落盘完全不受影响，
+	 * 事后 parse_log.py 会把这些记录单独标出来。
+	 */
+	if (TimerPl_Init() == XST_SUCCESS) {
+		if (TimerPl_SelfTest() != 0) {
+			xil_printf("TIME: PL clock ready, id=0x%08x\r\n",
+					(unsigned int)TIMER_PL_ID);
+			/*
+			 * PL 只知道「上电后过了多久」，不知道是几点。
+			 * 这里提醒一句，免得录完发现没有绝对时间。
+			 */
+			xil_printf("TIME: UTC not set, send 'setutc <unix_seconds>'"
+					" before recording\r\n");
+		} else {
+			xil_printf("TIME: AXI write path broken (scratch readback)\r\n");
+		}
+	} else {
+		xil_printf("TIME: PL clock NOT found at 0x%08x\r\n",
+				(unsigned int)TIMER_PL_BASE);
+		xil_printf("TIME: AbsNs will be 0, CAN logging unaffected\r\n");
+	}
 
 	Status = Can0_SetupInterrupt();
 	if (Status != XST_SUCCESS) {
